@@ -1,0 +1,13 @@
+@import "tailwindcss";
+
+/* @theme is the v4 way to define custom design tokens directly in CSS.
+   No config file needed. These become usable Tailwind classes automatically,
+   e.g. --color-shield-600 → you can write className="bg-shield-600". */
+@theme {
+  --color-shield-50:  #eef2ff;
+  --color-shield-100: #e0e7ff;
+  --color-shield-500: #6366f1;
+  --color-shield-600: #4f46e5;
+  --color-shield-700: #4338ca;
+  --font-sans: "Inter", system-ui, sans-serif;
+}
