@@ -113,6 +113,7 @@ def visualize_match(card_back_path, thumb_path, out_path, side="left"):
     return result["good_count"]
 
 
+
 def analyze_fingerprint(card_back_path=None, thumb_path=None, mode="photo", side="left"):
     """Run the fingerprint check. Returns the standard module shape."""
     weight = RISK_WEIGHTS["fingerprint_mismatch"]
@@ -163,6 +164,85 @@ def analyze_fingerprint(card_back_path=None, thumb_path=None, mode="photo", side
                        "Fingerprint could not be verified — treated as a mismatch",
                        None, {"error": str(e), "mode": mode})
 
+
+# --- Duplicate Fingerprint Detection ---
+# Stores cropped prints per submission. On new submission, SIFT-matches
+# against all stored prints. Catches reuse of the same citizenship card.
+
+PRINT_STORE_DIR = os.path.join("data", "fingerprint_store")
+
+
+def store_print(submission_id, card_back_path, side="left"):
+    """Crop and save the thumbprint for future duplicate checks."""
+    try:
+        os.makedirs(PRINT_STORE_DIR, exist_ok=True)
+        card = cv2.imread(card_back_path, cv2.IMREAD_GRAYSCALE)
+        if card is None:
+            return False
+        crop = _crop_thumbprint(card, side)
+        out_path = os.path.join(PRINT_STORE_DIR, f"{submission_id}.jpg")
+        cv2.imwrite(out_path, crop)
+        return True
+    except Exception:
+        return False
+
+
+def check_duplicate_print(card_back_path, current_submission_id=None, side="left"):
+    """SIFT-match this card's thumbprint against all previously stored prints.
+    Returns the standard module result shape."""
+    weight = 30  # strong fraud signal
+    try:
+        card = cv2.imread(card_back_path, cv2.IMREAD_GRAYSCALE)
+        if card is None:
+            raise ValueError("Could not read card back image")
+        crop = _crop_thumbprint(card, side)
+
+        os.makedirs(PRINT_STORE_DIR, exist_ok=True)
+        stored = [f for f in os.listdir(PRINT_STORE_DIR)
+                  if f.endswith(".jpg") and f != f"{current_submission_id}.jpg"]
+
+        if not stored:
+            return _result(False, 0, None,
+                           "No prior fingerprints to compare against",
+                           {"duplicate_print": {"stored_count": 0}})
+
+        best_match_id = None
+        best_count = 0
+
+        for fname in stored:
+            stored_path = os.path.join(PRINT_STORE_DIR, fname)
+            stored_img = cv2.imread(stored_path, cv2.IMREAD_GRAYSCALE)
+            if stored_img is None:
+                continue
+            try:
+                result = _sift_match(crop, stored_img)
+                if result["good_count"] > best_count:
+                    best_count = result["good_count"]
+                    best_match_id = fname.replace(".jpg", "")
+            except Exception:
+                continue
+
+        is_dup = best_count >= MATCH_THRESHOLD
+
+        if is_dup:
+            return _result(True, weight,
+                           f"Card fingerprint matches a previous submission ({best_match_id}) — possible document reuse ({best_count} keypoint matches)",
+                           None,
+                           {"duplicate_print": {"match_id": best_match_id,
+                                                "matches": best_count,
+                                                "threshold": MATCH_THRESHOLD,
+                                                "stored_count": len(stored)}})
+        else:
+            return _result(False, 0, None,
+                           "Card fingerprint does not match any prior submissions",
+                           {"duplicate_print": {"best_match": best_count,
+                                                "threshold": MATCH_THRESHOLD,
+                                                "stored_count": len(stored)}})
+    except Exception as e:
+        # Fail closed.
+        return _result(True, weight,
+                       "Could not check for duplicate fingerprints — treated as suspicious",
+                       None, {"duplicate_print": {"error": str(e)}})
 
 def _result(triggered, points, reason, pass_note, detail):
     return {

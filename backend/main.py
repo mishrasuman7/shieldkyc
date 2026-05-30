@@ -22,7 +22,7 @@ from modules.document_forensics import analyze_document
 from modules.face_match import analyze_face
 from modules.ocr_engine import analyze_name
 from modules.duplicate_detection import check_duplicate, add_face
-from modules.fingerprint import analyze_fingerprint
+from modules.fingerprint import analyze_fingerprint, check_duplicate_print, store_print
 from modules.risk_engine import fuse
 
 models.Base.metadata.create_all(bind=engine)
@@ -224,9 +224,19 @@ def submit_kyc(
             "details": {"behavior": {"error": "could not parse metrics"}},
         }
 
+    # Duplicate fingerprint: check if this card's print was seen before.
+    if back_path:
+        dup_print_result = check_duplicate_print(back_path, submission_id)
+    else:
+        dup_print_result = {
+            "module": "duplicate_print", "risk_added": 0,
+            "signals": {}, "reasons": [],
+            "passed": ["No card back provided for fingerprint duplicate check"],
+            "details": {},
+        }
     # Module 4: Fuse everything into one verdict.
-    verdict = fuse([doc_result, face_result, ocr_result, dup_result, fp_result, behavior_result])
-
+    # verdict = fuse([doc_result, face_result, ocr_result, dup_result, fp_result, behavior_result])
+    verdict = fuse([doc_result, face_result, ocr_result, dup_result, fp_result, dup_print_result, behavior_result])
     # Persist to SQLite.
     submission = models.Submission(
         submission_id=submission_id,
@@ -247,6 +257,9 @@ def submit_kyc(
     # Add selfie to FAISS AFTER duplicate check + save.
     if selfie_path:
         add_face(submission_id, selfie_path)
+    
+    if back_path:
+        store_print(submission_id, back_path)
 
     return {
         "submission_id": submission_id,

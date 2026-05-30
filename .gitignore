@@ -25,3 +25,6 @@ Thumbs.db
 # keep the folder structure even though contents are ignored
 !backend/data/uploads/.gitkeep
 !backend/data/faiss_index/.gitkeep
+
+backend/data/fingerprint_store/
+!backend/data/fingerprint_store/.gitkeep
