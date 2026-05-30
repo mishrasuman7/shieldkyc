@@ -107,6 +107,7 @@ def submit_kyc(
     photo: UploadFile = File(...),
     thumb: UploadFile = File(None),
     selfie: UploadFile = File(None),
+    behavior_metrics: str = Form("{}"),   # JSON string of typing/paste metrics
     db: Session = Depends(get_db),
 ):
     submission_id = "KYC-" + uuid.uuid4().hex[:8]
@@ -170,8 +171,61 @@ def submit_kyc(
             "details": {"fingerprint": {"mode": "skip"}},
         }
 
+    # --- Behavioral biometrics: detect automated/bulk-paste form filling ---
+    import json as _json
+    try:
+        bm = _json.loads(behavior_metrics)
+        behavior_risk = 0
+        behavior_reasons = []
+        behavior_passed = []
+
+        paste_count = bm.get("paste_count", 0)
+        pasted_fields = bm.get("pasted_fields", 0)
+        total_time_ms = bm.get("total_time_ms", 999999)
+        typing_speed = bm.get("typing_speed_cps", 0)
+
+        # Flag 1: Most fields were pasted (bulk paste operation).
+        if pasted_fields >= 3:
+            behavior_risk += 10
+            behavior_reasons.append(
+                f"Suspicious paste behavior — {pasted_fields} of {bm.get('total_fields', 4)} fields were pasted, not typed"
+            )
+
+        # Flag 2: Form completed inhumanly fast (< 3 seconds for all fields).
+        if total_time_ms < 3000 and total_time_ms > 0:
+            behavior_risk += 10
+            behavior_reasons.append(
+                f"Form completed in {total_time_ms / 1000:.1f}s — too fast for manual entry"
+            )
+
+        # Flag 3: Typing speed is inhuman (> 15 chars/second sustained).
+        if typing_speed > 15:
+            behavior_risk += 5
+            behavior_reasons.append(
+                f"Typing speed ({typing_speed:.1f} chars/sec) exceeds human norms"
+            )
+
+        if not behavior_reasons:
+            behavior_passed.append("Form filling behavior appears natural")
+
+        behavior_result = {
+            "module": "behavior",
+            "risk_added": behavior_risk,
+            "signals": {"suspicious_behavior": behavior_risk} if behavior_risk > 0 else {},
+            "reasons": behavior_reasons,
+            "passed": behavior_passed,
+            "details": {"behavior": bm},
+        }
+    except Exception:
+        behavior_result = {
+            "module": "behavior", "risk_added": 0,
+            "signals": {}, "reasons": [],
+            "passed": ["Behavior metrics unavailable"],
+            "details": {"behavior": {"error": "could not parse metrics"}},
+        }
+
     # Module 4: Fuse everything into one verdict.
-    verdict = fuse([doc_result, face_result, ocr_result, dup_result, fp_result])
+    verdict = fuse([doc_result, face_result, ocr_result, dup_result, fp_result, behavior_result])
 
     # Persist to SQLite.
     submission = models.Submission(

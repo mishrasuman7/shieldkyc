@@ -15,7 +15,7 @@ export async function checkHealth() {
 // Sends all four images + personal info to the backend pipeline.
 // Uses FormData because we're uploading files (multipart/form-data) — the
 // browser sets the right headers automatically when you pass a FormData body.
-export async function submitKYC(form) {
+export async function submitKYC(form, behaviorMetrics) {
   const data = new FormData();
   data.append("full_name", form.full_name);
   data.append("dob", form.dob);
@@ -24,14 +24,15 @@ export async function submitKYC(form) {
   data.append("citizenship_front", form.citizenship_front);
   data.append("citizenship_back", form.citizenship_back);
   data.append("photo", form.photo);
-
   if (form.thumb) {
     data.append("thumb", form.thumb);
   }
-
-  // data.append("selfie", form.selfie);
   if (form.selfie) {
-    data.append("selfie", form.selfie);   // omitted entirely if skipped
+    data.append("selfie", form.selfie);
+  }
+  // Behavioral biometrics — JSON string of typing/paste metrics.
+  if (behaviorMetrics) {
+    data.append("behavior_metrics", JSON.stringify(behaviorMetrics));
   }
 
   const res = await fetch(`${API_BASE}/api/submit-kyc`, {
@@ -42,7 +43,7 @@ export async function submitKYC(form) {
   if (!res.ok) {
     throw new Error(`Submission failed (status ${res.status})`);
   }
-  return res.json();   // the verdict: score, level, decision, explanation, ...
+  return res.json();
 }
 
 // Fetch all stored submissions for the admin dashboard.

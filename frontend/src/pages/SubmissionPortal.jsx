@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { submitKYC } from "../api/kyc";
+import useBehavior from "../hooks/useBehavior";
 
 const STEPS = [
   { id: 1, label: "Personal info" },
@@ -14,6 +15,7 @@ export default function SubmissionPortal() {
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
   const [submitError, setSubmitError] = useState(null);
+  const behavior = useBehavior();
 
   const [form, setForm] = useState({
     full_name: "",
@@ -27,8 +29,12 @@ export default function SubmissionPortal() {
     selfie: null,
   });
 
-  const update = (field) => (e) =>
+
+  const update = (field) => (e) => {
+    behavior.trackKeystroke(field);
     setForm((f) => ({ ...f, [field]: e.target.value }));
+  };
+
 
   const setFile = (field) => (file) =>
     setForm((f) => ({ ...f, [field]: file }));
@@ -52,7 +58,7 @@ export default function SubmissionPortal() {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      const verdict = await submitKYC(form);
+      const verdict = await submitKYC(form, behavior.getMetrics());
       setResult(verdict);
     } catch (err) {
       setSubmitError(err.message || "Something went wrong. Please try again.");
@@ -126,10 +132,10 @@ export default function SubmissionPortal() {
                 Enter your information exactly as it appears on your citizenship card.
               </p>
               <div className="space-y-4">
-                <Field label="Full name" value={form.full_name} onChange={update("full_name")} placeholder="Suman Mishra" />
-                <Field label="Date of birth" type="date" value={form.dob} onChange={update("dob")} />
-                <Field label="Citizenship number" value={form.citizenship_number} onChange={update("citizenship_number")} placeholder="72-01-80-00667" />
-                <Field label="Phone number" type="tel" value={form.phone} onChange={update("phone")} placeholder="98XXXXXXXX" />
+                <Field label="Full name" value={form.full_name} onChange={update("full_name")} onPaste={() => behavior.trackPaste("full_name")} placeholder="Suman Mishra" />
+                <Field label="Date of birth" type="date" value={form.dob} onChange={update("dob")} onPaste={() => behavior.trackPaste("dob")} />
+                <Field label="Citizenship number" value={form.citizenship_number} onChange={update("citizenship_number")} onPaste={() => behavior.trackPaste("citizenship_number")} placeholder="72-01-80-00667" />
+                <Field label="Phone number" type="tel" value={form.phone} onChange={update("phone")} onPaste={() => behavior.trackPaste("phone")} placeholder="98XXXXXXXX" />
               </div>
             </div>
           )}
@@ -195,6 +201,7 @@ export default function SubmissionPortal() {
               <div className="text-center mt-4">
                 <button
                   onClick={doSubmit}
+                  
                   disabled={submitting}
                   className="text-sm text-slate-400 hover:text-slate-600 hover:underline disabled:opacity-50"
                 >
@@ -236,12 +243,13 @@ export default function SubmissionPortal() {
   );
 }
 
-function Field({ label, type = "text", ...props }) {
+function Field({ label, type = "text", onPaste, ...props }) {
   return (
     <label className="block">
       <span className="block text-sm font-medium text-slate-700 mb-1.5">{label}</span>
       <input
         type={type}
+        onPaste={onPaste}
         {...props}
         className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-shield-500 focus:ring-2 focus:ring-shield-500/20 outline-none transition"
       />
