@@ -18,12 +18,12 @@ from sqlalchemy.orm import Session
 from database.db import engine, get_db
 from database import models
 
-from modules.document_forensics import analyze_document
-from modules.face_match import analyze_face
-from modules.ocr_engine import analyze_name
-from modules.duplicate_detection import check_duplicate, add_face
-from modules.fingerprint import analyze_fingerprint, check_duplicate_print, store_print
-from modules.risk_engine import fuse
+# from modules.document_forensics import analyze_document
+# from modules.face_match import analyze_face
+# from modules.ocr_engine import analyze_name
+# from modules.duplicate_detection import check_duplicate, add_face
+# from modules.fingerprint import analyze_fingerprint, check_duplicate_print, store_print
+# from modules.risk_engine import fuse
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -111,6 +111,14 @@ def submit_kyc(
     db: Session = Depends(get_db),
 ):
     submission_id = "KYC-" + uuid.uuid4().hex[:8]
+
+    # Lazy imports — models load on first call, not at startup.
+    from modules.document_forensics import analyze_document
+    from modules.face_match import analyze_face
+    from modules.ocr_engine import analyze_name
+    from modules.duplicate_detection import check_duplicate, add_face
+    from modules.fingerprint import analyze_fingerprint, check_duplicate_print, store_print
+    from modules.risk_engine import fuse
 
     # Save uploads to disk.
     front_path = _save_upload(citizenship_front, submission_id, "front")
