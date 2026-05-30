@@ -23,7 +23,7 @@ import numpy as np
 RISK_WEIGHTS = {"fingerprint_mismatch": 15}
 
 # Minimum good SIFT matches to consider it a verified match.
-MATCH_THRESHOLD = 10
+MATCH_THRESHOLD = 25
 
 # Lowe's ratio test threshold — lower = stricter matching.
 LOWE_RATIO = 0.75

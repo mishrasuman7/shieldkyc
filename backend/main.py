@@ -49,18 +49,22 @@ def _save_upload(upload: UploadFile, submission_id: str, kind: str) -> str:
     return path
 
 
-def _shrink_saved_image(path: str, max_dim: int = 1400):
-    """Downscale a saved image in place if its longest side exceeds max_dim."""
-    import cv2
-    img = cv2.imread(path)
-    if img is None:
-        return
-    h, w = img.shape[:2]
-    scale = max_dim / max(h, w)
-    if scale < 1.0:
-        img = cv2.resize(img, (int(w * scale), int(h * scale)),
-                         interpolation=cv2.INTER_AREA)
-        cv2.imwrite(path, img)
+def _shrink_saved_image(path: str, max_dim: int = 1200):
+    """Downscale a saved image in place, PRESERVING EXIF metadata."""
+    from PIL import Image
+    try:
+        img = Image.open(path)
+        exif = img.info.get("exif", None)   # save EXIF before resize
+        w, h = img.size
+        scale = max_dim / max(w, h)
+        if scale < 1.0:
+            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            if exif:
+                img.save(path, exif=exif)    # write EXIF back
+            else:
+                img.save(path)
+    except Exception:
+        pass
 
 
 @app.get("/")
