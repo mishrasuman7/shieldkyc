@@ -1,12 +1,12 @@
 import { useState, useRef, useEffect } from "react";
 import { submitKYC } from "../api/kyc";
 
-// The four steps. The progress bar and navigation read from this array.
 const STEPS = [
   { id: 1, label: "Personal info" },
   { id: 2, label: "Citizenship card" },
   { id: 3, label: "Your photo" },
-  { id: 4, label: "Selfie" },
+  { id: 4, label: "Fingerprint" },
+  { id: 5, label: "Selfie" },
 ];
 
 export default function SubmissionPortal() {
@@ -23,6 +23,7 @@ export default function SubmissionPortal() {
     citizenship_front: null,
     citizenship_back: null,
     photo: null,
+    thumb: null,
     selfie: null,
   });
 
@@ -32,7 +33,6 @@ export default function SubmissionPortal() {
   const setFile = (field) => (file) =>
     setForm((f) => ({ ...f, [field]: file }));
 
-  // --- Per-step validation gates ---
   const step1Valid =
     form.full_name.trim() &&
     form.dob.trim() &&
@@ -40,29 +40,31 @@ export default function SubmissionPortal() {
     form.phone.trim();
   const step2Valid = form.citizenship_front && form.citizenship_back;
   const step3Valid = form.photo;
-  const step4Valid = form.selfie;
 
+  // Steps 4 and 5 are always advanceable (both are optional / skippable).
   const canAdvance =
     step === 1 ? step1Valid :
     step === 2 ? step2Valid :
     step === 3 ? step3Valid :
-    step === 4 ? step4Valid :
     true;
+
+  const doSubmit = async () => {
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      const verdict = await submitKYC(form);
+      setResult(verdict);
+    } catch (err) {
+      setSubmitError(err.message || "Something went wrong. Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   const next = async () => {
     if (!canAdvance) return;
-    // On the last step, "Next" becomes "Submit".
     if (step === STEPS.length) {
-      setSubmitting(true);
-      setSubmitError(null);
-      try {
-        const verdict = await submitKYC(form);
-        setResult(verdict);
-      } catch (err) {
-        setSubmitError(err.message || "Something went wrong. Please try again.");
-      } finally {
-        setSubmitting(false);
-      }
+      await doSubmit();
       return;
     }
     setStep((s) => Math.min(s + 1, STEPS.length));
@@ -77,11 +79,11 @@ export default function SubmissionPortal() {
       <div className="w-full max-w-lg rounded-3xl bg-white ring-1 ring-slate-900/5 shadow-xl shadow-shield-500/5 p-6 sm:p-8">
 
         {result ? (
-          <ResultScreen result={result} onReset={() => { setResult(null); setStep(1); }} />
+          <ResultScreen result={result} onReset={() => { setResult(null); setStep(1); setForm({ full_name: "", dob: "", citizenship_number: "", phone: "", citizenship_front: null, citizenship_back: null, photo: null, thumb: null, selfie: null }); }} />
         ) : (
         <>
 
-        {/* --- Header: brand + secure badge --- */}
+        {/* --- Header --- */}
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
             <div className="grid place-items-center h-9 w-9 rounded-xl bg-shield-600 text-white font-bold">S</div>
@@ -159,11 +161,46 @@ export default function SubmissionPortal() {
 
           {step === 4 && (
             <div>
+              <h2 className="text-lg font-semibold text-slate-900 mb-1">Fingerprint verification</h2>
+              <p className="text-sm text-slate-500 mb-5">
+                Upload a clear photo of your thumb. We match it against the thumbprint on your citizenship card using SIFT keypoint analysis.
+              </p>
+              <div className="max-w-[240px] mx-auto">
+                <UploadZone
+                  label="Thumb photo"
+                  hint="Right thumb, clear & well-lit"
+                  file={form.thumb}
+                  onFile={setFile("thumb")}
+                />
+              </div>
+              <div className="text-center mt-4">
+                <button
+                  onClick={next}
+                  disabled={submitting}
+                  className="text-sm text-slate-400 hover:text-slate-600 hover:underline disabled:opacity-50"
+                >
+                  Skip fingerprint for now
+                </button>
+              </div>
+            </div>
+          )}
+
+          {step === 5 && (
+            <div>
               <h2 className="text-lg font-semibold text-slate-900 mb-1">Take a selfie</h2>
               <p className="text-sm text-slate-500 mb-5">
                 Look straight at the camera in good lighting. This confirms a live person matching your photo.
               </p>
               <SelfieCapture file={form.selfie} onCapture={setFile("selfie")} />
+              <div className="text-center mt-4">
+                <button
+                  onClick={doSubmit}
+                  disabled={submitting}
+                  className="text-sm text-slate-400 hover:text-slate-600 hover:underline disabled:opacity-50"
+                >
+                  Skip selfie for now
+                </button>
+              </div>
             </div>
           )}
 
@@ -199,7 +236,6 @@ export default function SubmissionPortal() {
   );
 }
 
-// A reusable labeled input.
 function Field({ label, type = "text", ...props }) {
   return (
     <label className="block">
@@ -213,7 +249,6 @@ function Field({ label, type = "text", ...props }) {
   );
 }
 
-// A reusable upload zone — empty state or filled state with thumbnail preview.
 function UploadZone({ label, hint, file, onFile }) {
   const inputId = `upload-${label.replace(/\s+/g, "-").toLowerCase()}`;
   const previewUrl = file ? URL.createObjectURL(file) : null;
@@ -257,7 +292,6 @@ function UploadZone({ label, hint, file, onFile }) {
   );
 }
 
-// Webcam selfie capture, with an upload fallback if the camera is unavailable.
 function SelfieCapture({ file, onCapture }) {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
@@ -351,7 +385,6 @@ function SelfieCapture({ file, onCapture }) {
   );
 }
 
-// The verdict screen — the demo centerpiece.
 function ResultScreen({ result, onReset }) {
   const { risk_score, risk_level, decision, explanation } = result;
 

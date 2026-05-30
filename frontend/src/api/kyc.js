@@ -1,8 +1,8 @@
 // src/api/kyc.js — all backend calls live here, so the rest of the app
 // never hardcodes URLs. When we deploy later, we change ONE line.
 
-const API_BASE = "http://localhost:8000";
-const API_BASE = "http://192.168.1.78:8000";   // e.g. http://192.168.1.105:8000
+// const API_BASE = "http://localhost:8000";   // e.g. http://192.168.1.105:8000
+const API_BASE = "http://192.168.15.140:8000";
 
 // Pings the backend's health endpoint we built earlier.
 // Returns the JSON on success; throws on any failure so the UI can react.
@@ -24,7 +24,15 @@ export async function submitKYC(form) {
   data.append("citizenship_front", form.citizenship_front);
   data.append("citizenship_back", form.citizenship_back);
   data.append("photo", form.photo);
-  data.append("selfie", form.selfie);
+
+  if (form.thumb) {
+    data.append("thumb", form.thumb);
+  }
+
+  // data.append("selfie", form.selfie);
+  if (form.selfie) {
+    data.append("selfie", form.selfie);   // omitted entirely if skipped
+  }
 
   const res = await fetch(`${API_BASE}/api/submit-kyc`, {
     method: "POST",

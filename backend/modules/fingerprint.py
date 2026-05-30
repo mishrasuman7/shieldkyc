@@ -1,24 +1,18 @@
-# modules/fingerprint.py — Module 5: Fingerprint Biometrics (MOCK-FIRST)
-# Inputs:  reference fingerprint (the print on the citizenship card),
-#          probe fingerprint (the user's uploaded fingerprint photo),
-#          mode: "photo" | "sensor" | "skip"
-# Output:  dict with risk points, plain-English reason, raw numbers
+# modules/fingerprint.py — Module 5: Fingerprint Biometrics (SIFT + FLANN)
 #
-# WHY MOCK-FIRST (your spec's call): real SourceAFIS minutiae matching against
-# a PHOTOGRAPHED thumbprint is hard and finicky — the riskiest module to get
-# reliable under time pressure. So we build a working mock NOW that always
-# returns a sensible score, get the whole pipeline running on it, and slot real
-# SourceAFIS into _real_match() LATER if there's time. Nothing else changes.
+# THE INNOVATION (Nepal-specific):
+#   Nepali citizenship cards have two inked thumbprints on the back.
+#   This module extracts them, then matches against a fresh thumb photo
+#   using SIFT keypoints + FLANN matching.
 #
-# THE THREE MODES (your spec):
-#   "photo"  — Option A: match uploaded fingerprint photo against card print -> +15 on mismatch
-#   "sensor" — Option B: WebAuthn phone sensor. Returns a crypto TOKEN, not an
-#              image, so it CANNOT match the card — treated as a liveness/
-#              consistency check only. Passes (+0).
-#   "skip"   — user skipped the optional step -> no signal (+0).
+# PIPELINE:
+#   1. Crop the thumbprint region from the citizenship card back
+#   2. Enhance with CLAHE (boost faded ink contrast)
+#   3. Extract SIFT keypoints from both card print and fresh thumb photo
+#   4. Match with FLANN + Lowe's ratio test
+#   5. Score based on number of good matches
 #
-# SAFETY RULE: in photo mode, if matching crashes or an image can't be read,
-# we ADD the mismatch points (fail closed) — never silently clear.
+# SAFETY RULE: if matching fails or images unreadable -> ADD risk (fail closed).
 
 import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
@@ -28,84 +22,149 @@ import numpy as np
 
 RISK_WEIGHTS = {"fingerprint_mismatch": 15}
 
-# A fingerprint "matches" the card if its score is >= this (0-100).
-# This is a MOCK heuristic threshold — calibrate when you have real prints,
-# or it becomes irrelevant once real SourceAFIS is wired into _real_match().
-FINGERPRINT_MATCH_MIN = 40.0
+# Minimum good SIFT matches to consider it a verified match.
+MATCH_THRESHOLD = 10
+
+# Lowe's ratio test threshold — lower = stricter matching.
+LOWE_RATIO = 0.75
 
 
-def _real_match(ref_img, probe_img):
-    """REAL SourceAFIS minutiae matching goes here later. For now it raises,
-    so analyze_fingerprint() falls back to the mock automatically. When you're
-    ready: install sourceafis, implement this to return a 0-100 score, and the
-    rest of the pipeline needs ZERO changes."""
-    raise NotImplementedError("SourceAFIS not wired yet — using mock")
+def _enhance_print(img_gray):
+    """Enhance a fingerprint image: resize, CLAHE contrast boost, blur.
+    Makes faded ink prints from citizenship cards much more readable."""
+    img = cv2.resize(img_gray, (300, 300))
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    img = clahe.apply(img)
+    img = cv2.GaussianBlur(img, (3, 3), 0)
+    return img
 
 
-def _mock_score(ref_img, probe_img):
-    """Mock match score (0-100). NOT real minutiae matching — it's an image-
-    similarity proxy so the demo behaves sensibly: the same print scores high,
-    a different one scores low. Deterministic, so results are reproducible."""
-    size = (256, 256)
-    a = cv2.equalizeHist(cv2.resize(ref_img, size))    # normalize contrast
-    b = cv2.equalizeHist(cv2.resize(probe_img, size))
-    af, bf = a.flatten().astype(np.float64), b.flatten().astype(np.float64)
-    if af.std() == 0 or bf.std() == 0:
-        corr = 0.0
+def _crop_thumbprint(card_back_gray, side="left"):
+    """Crop the thumbprint region from the citizenship card back.
+    Nepali citizenship cards have prints in the bottom portion.
+    'left' = left side prints (default), 'right' = right side."""
+    h, w = card_back_gray.shape
+    top = int(h * 0.50)
+    if side == "right":
+        left = int(w * 0.55)
+        return card_back_gray[top:, left:]
     else:
-        corr = float(np.corrcoef(af, bf)[0, 1])   # -1..1
-    return round(max(0.0, corr) * 100, 1)          # negatives -> 0
+        right = int(w * 0.45)
+        return card_back_gray[top:, :right]
 
 
-def analyze_fingerprint(reference_path=None, probe_path=None, mode="photo"):
+def _sift_match(img1_gray, img2_gray):
+    """Extract SIFT keypoints from both images, match with FLANN,
+    apply Lowe's ratio test, return match data for scoring + visualization."""
+    img1 = _enhance_print(img1_gray)
+    img2 = _enhance_print(img2_gray)
+
+    sift = cv2.SIFT_create()
+    kp1, des1 = sift.detectAndCompute(img1, None)
+    kp2, des2 = sift.detectAndCompute(img2, None)
+
+    if des1 is None or des2 is None or len(des1) < 5 or len(des2) < 5:
+        raise ValueError("Too few features detected — image quality too low for matching")
+
+    # FLANN matcher — fast approximate nearest neighbors.
+    index_params = {"algorithm": 1, "trees": 5}
+    search_params = {"checks": 50}
+    flann = cv2.FlannBasedMatcher(index_params, search_params)
+    matches = flann.knnMatch(des1, des2, k=2)
+
+    # Lowe's ratio test: keep only matches where the best match is significantly
+    # better than the second-best. Filters out ambiguous/bad matches.
+    good = []
+    for m, n in matches:
+        if m.distance < LOWE_RATIO * n.distance:
+            good.append(m)
+
+    return {
+        "good_count": len(good),
+        "total_kp1": len(kp1),
+        "total_kp2": len(kp2),
+        "kp1": kp1, "kp2": kp2,
+        "good_matches": good,
+        "img1": img1, "img2": img2,
+    }
+
+
+def visualize_match(card_back_path, thumb_path, out_path, side="left"):
+    """DEMO GOLD: draw lines connecting matched keypoints between the card
+    print and the fresh thumb photo. Green lines = verified matches."""
+    card = cv2.imread(card_back_path, cv2.IMREAD_GRAYSCALE)
+    thumb = cv2.imread(thumb_path, cv2.IMREAD_GRAYSCALE)
+    if card is None or thumb is None:
+        raise ValueError("Could not read one or both images")
+
+    card_crop = _crop_thumbprint(card, side)
+    result = _sift_match(card_crop, thumb)
+
+    vis = cv2.drawMatches(
+        result["img1"], result["kp1"],
+        result["img2"], result["kp2"],
+        result["good_matches"][:50],
+        None,
+        matchColor=(0, 200, 0),
+        singlePointColor=(200, 200, 200),
+        flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS,
+    )
+    cv2.imwrite(out_path, vis)
+    return result["good_count"]
+
+
+def analyze_fingerprint(card_back_path=None, thumb_path=None, mode="photo", side="left"):
     """Run the fingerprint check. Returns the standard module shape."""
     weight = RISK_WEIGHTS["fingerprint_mismatch"]
 
-    # Mode: WebAuthn sensor — a token, not an image. Liveness/consistency only.
+    # Mode: WebAuthn sensor — liveness/consistency check only.
     if mode == "sensor":
         return _result(False, 0, None,
-                       "Fingerprint sensor verified (liveness check)",
+                       "Fingerprint sensor verified (biometric liveness check)",
                        {"mode": "sensor",
-                        "note": "WebAuthn token verified; cannot be matched to card print"})
+                        "note": "WebAuthn confirms device owner; card print analyzed separately"})
 
-    # Mode: skipped optional step, or images simply not provided.
-    if mode == "skip" or reference_path is None or probe_path is None:
+    # Mode: skipped.
+    if mode == "skip" or card_back_path is None or thumb_path is None:
         return _result(False, 0, None,
                        "Fingerprint not provided (optional step)",
                        {"mode": "skip"})
 
-    # Mode: photo — match the uploaded fingerprint against the card print.
+    # Mode: photo — SIFT match the card print against the fresh thumb.
     try:
-        ref = cv2.imread(reference_path, cv2.IMREAD_GRAYSCALE)
-        probe = cv2.imread(probe_path, cv2.IMREAD_GRAYSCALE)
-        if ref is None or probe is None:
+        card = cv2.imread(card_back_path, cv2.IMREAD_GRAYSCALE)
+        thumb = cv2.imread(thumb_path, cv2.IMREAD_GRAYSCALE)
+        if card is None or thumb is None:
             raise ValueError("Could not read one or both fingerprint images")
 
-        # Try real matching; fall back to mock if SourceAFIS isn't wired.
-        try:
-            score = _real_match(ref, probe)
-            engine = "sourceafis"
-        except Exception:
-            score = _mock_score(ref, probe)
-            engine = "mock"
+        card_crop = _crop_thumbprint(card, side)
+        result = _sift_match(card_crop, thumb)
 
-        triggered = score < FINGERPRINT_MATCH_MIN   # low score = mismatch = risk
+        good_count = result["good_count"]
+        triggered = good_count < MATCH_THRESHOLD
+
+        score_pct = round(min(good_count / MATCH_THRESHOLD * 100, 100.0), 1)
+
         return _result(
             triggered, weight if triggered else 0,
-            f"Fingerprint does not match citizenship card (score: {score:.0f}/100)" if triggered else None,
-            None if triggered else f"Fingerprint matches citizenship card (score: {score:.0f}/100)",
-            {"mode": "photo", "match_score": score,
-             "threshold": FINGERPRINT_MATCH_MIN, "engine": engine},
+            f"Fingerprint does not match citizenship card ({good_count} keypoint matches, need {MATCH_THRESHOLD})" if triggered else None,
+            None if triggered else f"Fingerprint matches citizenship card ({good_count} keypoint matches, {score_pct}% confidence)",
+            {"mode": "photo", "engine": "sift_flann",
+             "good_matches": good_count,
+             "threshold": MATCH_THRESHOLD,
+             "keypoints_card": result["total_kp1"],
+             "keypoints_thumb": result["total_kp2"],
+             "match_confidence_pct": score_pct,
+             "side": side},
         )
     except Exception as e:
-        # FAIL CLOSED: unreadable / crash -> treat as a mismatch.
+        # FAIL CLOSED.
         return _result(True, weight,
                        "Fingerprint could not be verified — treated as a mismatch",
                        None, {"error": str(e), "mode": mode})
 
 
 def _result(triggered, points, reason, pass_note, detail):
-    """Pack into the standard shape every module returns."""
     return {
         "module": "fingerprint",
         "risk_added": points,
@@ -117,29 +176,44 @@ def _result(triggered, points, reason, pass_note, detail):
 
 
 # --- Standalone test ---
-# From backend/:  python -m modules.fingerprint selftest <imgA> <imgB>
-# (For the MOCK, any two images work — same image = match, different = mismatch.
-#  Real fingerprint prints come at demo prep.)
+# python -m modules.fingerprint match <card_back> <thumb_photo> [left|right]
+# python -m modules.fingerprint visualize <card_back> <thumb_photo> <output.jpg> [left|right]
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) >= 4 and sys.argv[1] == "selftest":
-        a, b = sys.argv[2], sys.argv[3]
 
-        def show(label, r):
-            note = (r["reasons"] or r["passed"] or ["(none)"])[0]
-            print(f"  {label:<28} -> +{r['risk_added']:<3} | {note}")
-            if "match_score" in r["details"]["fingerprint"]:
-                d = r["details"]["fingerprint"]
-                print(f"  {'':<28}    score={d['match_score']} engine={d['engine']}")
+    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
 
-        print("\n" + "=" * 60)
-        print("  FINGERPRINT MODULE — mock-first selftest")
-        print("=" * 60)
-        show("same print (expect match)",    analyze_fingerprint(a, a, mode="photo"))
-        show("different print (mismatch)",   analyze_fingerprint(a, b, mode="photo"))
-        show("WebAuthn sensor (pass +0)",    analyze_fingerprint(mode="sensor"))
-        show("skipped (pass +0)",            analyze_fingerprint(mode="skip"))
-        show("missing file (fail closed)",   analyze_fingerprint("nope.jpg", "nope.jpg", mode="photo"))
+    if cmd == "match" and len(sys.argv) >= 4:
+        card_back, thumb = sys.argv[2], sys.argv[3]
+        side = sys.argv[4] if len(sys.argv) > 4 else "left"
+        print(f"\nMatching thumb against card ({side} side)...")
+        r = analyze_fingerprint(card_back, thumb, mode="photo", side=side)
+        print(f"\n{'=' * 55}")
+        print(f"  FINGERPRINT (SIFT+FLANN)  ->  +{r['risk_added']} risk points")
+        print(f"{'=' * 55}")
+        d = r["details"]["fingerprint"]
+        if r["reasons"]:
+            for reason in r["reasons"]:
+                print(f"  FLAG: {reason}")
+        if r["passed"]:
+            for p in r["passed"]:
+                print(f"  PASS: {p}")
+        print(f"\n  Keypoints on card:  {d.get('keypoints_card', '?')}")
+        print(f"  Keypoints on thumb: {d.get('keypoints_thumb', '?')}")
+        print(f"  Good matches:       {d.get('good_matches', '?')}")
+        print(f"  Threshold:          {d.get('threshold', '?')}")
+        print(f"  Engine:             {d.get('engine', '?')}")
         print()
+
+    elif cmd == "visualize" and len(sys.argv) >= 5:
+        card_back, thumb, out = sys.argv[2], sys.argv[3], sys.argv[4]
+        side = sys.argv[5] if len(sys.argv) > 5 else "left"
+        print(f"Generating match visualization ({side} side)...")
+        n = visualize_match(card_back, thumb, out, side)
+        print(f"  {n} good matches drawn -> saved to {out}")
+        print(f"  Open {out} to see the matched keypoints!")
+
     else:
-        print('Usage: python -m modules.fingerprint selftest <imgA> <imgB>')
+        print("Usage:")
+        print("  python -m modules.fingerprint match <card_back> <thumb_photo> [left|right]")
+        print("  python -m modules.fingerprint visualize <card_back> <thumb_photo> <output.jpg> [left|right]")
